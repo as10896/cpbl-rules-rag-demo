@@ -12,6 +12,7 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_qdrant import QdrantVectorStore
 
 from app.main import app, llm_dependency, store_dependency
+from app.rag import MAX_CHUNKS_PER_ARTICLE, cap_per_article, fuse
 
 
 def make_document(section: str, text: str) -> Document:
@@ -63,6 +64,30 @@ def read_events(response) -> list[tuple[str, object]]:
         if "data" in fields:
             events.append((fields["event"], json.loads(fields["data"])))
     return events
+
+
+def make_hit(chunk_id: str, score: float) -> tuple[Document, float]:
+    document = make_document("第45條", chunk_id)
+    document.metadata["_id"] = chunk_id
+    return document, score
+
+
+def test_fusion_ranks_by_position_not_by_score():
+    original = [make_hit("a", 0.60), make_hit("b", 0.55)]
+    # A rewrite that went astray: unrelated chunks, all scoring higher than anything the original found.
+    rewrite = [make_hit("x", 0.90), make_hit("b", 0.85), make_hit("y", 0.80)]
+    fused = fuse([original, rewrite])
+    # "b" is found by both queries so it leads; "a", the original's top hit, is not pushed out by "y".
+    assert [document.page_content for document, _ in fused] == ["b", "a", "x", "y"]
+    assert fused[0][1] == 0.85
+
+
+def test_one_article_cannot_fill_every_slot():
+    long_article = [(make_document("6.01", f"chunk {i}"), 0.9 - i / 100) for i in range(6)]
+    other_article = (make_document("3.26", "本壘衝撞之規定"), 0.5)
+    selected = cap_per_article([*long_article, other_article], k=6)
+    sections = [document.metadata["section"] for document, _ in selected]
+    assert sections == ["6.01"] * MAX_CHUNKS_PER_ARTICLE + ["3.26"]
 
 
 def test_search_returns_ranked_sources(client):

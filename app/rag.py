@@ -5,8 +5,8 @@ input and output is visible, so debugging or swapping a step is straightforward.
 """
 
 import asyncio
+from collections import Counter
 from functools import lru_cache
-from itertools import chain
 
 from langchain.chat_models import init_chat_model
 from langchain_core.documents import Document
@@ -82,15 +82,56 @@ async def rewrite_query(llm: BaseChatModel, question: str) -> Rewrite:
     return Rewrite(query=response.text.strip(), model=model_name(response))
 
 
-async def retrieve(store: VectorStore, queries: list[str], k: int) -> list[Source]:
-    """Fetch k results per query, keep the best score for a chunk hit by several queries, return the top k."""
-    results = await asyncio.gather(*(store.asimilarity_search_with_score(query, k=k) for query in queries))
+# How many candidates to fetch per requested result, so that fusing and capping have something to choose from.
+CANDIDATES_PER_RESULT = 5
+# The constant conventionally used for reciprocal rank fusion; it damps the advantage of the very top ranks.
+RRF_K = 60
+# A long article is split into many similar chunks, which can fill every slot and crowd out a
+# shorter, equally relevant article from another document. The cap is a trade-off, not a free win:
+# too low and it drops the chunk that holds the answer. On the sample questions a cap of 2 lost
+# the pitch timer figures (the third-ranked chunk of its article), while no cap lost the league's
+# own home plate collision item.
+MAX_CHUNKS_PER_ARTICLE = 3
+
+
+def fuse(results: list[list[tuple[Document, float]]]) -> list[tuple[Document, float]]:
+    """Combine the ranked hits of several queries into one best-first list by reciprocal rank fusion.
+
+    Similarity scores from different queries are not comparable, so ranking the union by score lets one
+    query dominate: a rewrite that went astray would push out the original question's best hits.
+    Fusing by rank keeps the top of every list and favours chunks found by more than one query.
+    Each chunk keeps its best similarity score, for display only.
+    """
+    fused: Counter[str] = Counter()
     best: dict[str, tuple[Document, float]] = {}
-    for document, score in chain.from_iterable(results):
-        key = document.metadata["_id"]
-        if key not in best or score > best[key][1]:
-            best[key] = (document, score)
-    ranked = sorted(best.values(), key=lambda pair: pair[1], reverse=True)[:k]
+    for hits in results:
+        for rank, (document, score) in enumerate(hits, start=1):
+            key = document.metadata["_id"]
+            fused[key] += 1 / (RRF_K + rank)
+            if key not in best or score > best[key][1]:
+                best[key] = (document, score)
+    return [best[key] for key, _ in fused.most_common()]
+
+
+def cap_per_article(ranked: list[tuple[Document, float]], k: int) -> list[tuple[Document, float]]:
+    """Take the top k from a best-first list, letting each article contribute at most MAX_CHUNKS_PER_ARTICLE."""
+    selected: list[tuple[Document, float]] = []
+    taken: Counter[tuple[str, str]] = Counter()
+    for document, score in ranked:
+        article = (document.metadata["doc"], document.metadata["section"])
+        if taken[article] < MAX_CHUNKS_PER_ARTICLE:
+            taken[article] += 1
+            selected.append((document, score))
+        if len(selected) == k:
+            break
+    return selected
+
+
+async def retrieve(store: VectorStore, queries: list[str], k: int) -> list[Source]:
+    """Search once per query, fuse the rankings, then take the top k with a per-article cap."""
+    candidates = k * CANDIDATES_PER_RESULT
+    results = await asyncio.gather(*(store.asimilarity_search_with_score(query, k=candidates) for query in queries))
+    ranked = cap_per_article(fuse(results), k)
     return [
         Source(
             index=index,

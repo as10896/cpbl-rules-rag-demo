@@ -34,11 +34,11 @@ sequenceDiagram
         loop For the question and the rewritten query, concurrently
             API->>Embed: Embed the query
             Embed-->>API: Query vector
-            API->>Qdrant: Similarity search, top k
+            API->>Qdrant: Similarity search for candidates
             Qdrant-->>API: Chunks with scores
         end
 
-        API->>API: Merge the results, keep the best score<br/>per chunk, take the top k
+        API->>API: Fuse the rankings, then take the top k<br/>with a cap on chunks per article
         API-->>User: SSE event: sources
         API->>LLM: System prompt, numbered chunks and the question
     else use_rag is false (comparison baseline)
