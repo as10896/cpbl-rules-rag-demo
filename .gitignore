@@ -5,4 +5,7 @@ __pycache__/
 .ruff_cache/
 
 # Official PDFs (copyright CPBL) and the embedding model cache; ingest downloads them.
-data/
+# The directory itself is tracked so it exists, owned by the host user, before Docker bind-mounts it;
+# otherwise Docker creates it as root and the container's non-root user cannot write to it.
+data/*
+!data/.gitkeep
