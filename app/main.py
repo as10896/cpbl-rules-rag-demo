@@ -10,7 +10,7 @@ from langchain_core.vectorstores import VectorStore
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.rag import Source, build_messages, get_llm, retrieve, rewrite_query
+from app.rag import Source, build_messages, get_llm, model_name, retrieve, rewrite_query
 from app.vectorstore import get_store
 
 logger = logging.getLogger("uvicorn.error")
@@ -57,20 +57,27 @@ async def search(
 
 @app.post("/api/chat", response_class=EventSourceResponse)
 async def chat(request: ChatRequest, llm: LLMDep, store: StoreDep) -> AsyncIterable[ServerSentEvent]:
-    """Stream the response as SSE. Events, in order: rewrite (the rewritten query), sources (retrieved chunks), token (answer fragments)."""
+    """Stream the response as SSE.
+
+    Events, in order: rewrite (the rewritten query and the model that wrote it), sources (retrieved chunks),
+    token (answer fragments), model (the model that answered).
+    """
     try:
         sources = None
         if request.use_rag:
             queries = [request.question]
             if request.rewrite:
                 rewritten = await rewrite_query(llm, request.question)
-                queries.append(rewritten)
+                queries.append(rewritten.query)
                 yield ServerSentEvent(event="rewrite", data=rewritten)
             sources = await retrieve(store, queries, request.top_k)
             yield ServerSentEvent(event="sources", data=sources)
+        answered_by = None
         async for chunk in llm.astream(build_messages(request.question, sources)):
             if chunk.text:
                 yield ServerSentEvent(event="token", data=chunk.text)
+            if not answered_by and (answered_by := model_name(chunk)):
+                yield ServerSentEvent(event="model", data=answered_by)
     except Exception as error:
         # The 200 status is already sent once streaming starts, so errors can only reach the client as an event.
         logger.exception("chat failed")

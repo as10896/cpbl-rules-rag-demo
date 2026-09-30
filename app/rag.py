@@ -11,6 +11,7 @@ from itertools import chain
 from langchain.chat_models import init_chat_model
 from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage
 from langchain_core.vectorstores import VectorStore
 from pydantic import BaseModel
 
@@ -56,14 +57,29 @@ class Source(BaseModel):
     text: str
 
 
+class Rewrite(BaseModel):
+    query: str
+    model: str | None
+
+
 @lru_cache
 def get_llm() -> BaseChatModel:
     return init_chat_model(settings.llm_model)
 
 
-async def rewrite_query(llm: BaseChatModel, question: str) -> str:
+def model_name(message: BaseMessage) -> str | None:
+    """The model that actually produced a message, as reported by the provider.
+
+    This can differ from LLM_MODEL: a router such as openrouter/free picks a model per request.
+    When streaming, providers usually report it only on the final chunk.
+    """
+    metadata = message.response_metadata
+    return metadata.get("model_name") or metadata.get("model")
+
+
+async def rewrite_query(llm: BaseChatModel, question: str) -> Rewrite:
     response = await llm.ainvoke([("system", REWRITE_SYSTEM), ("human", question)])
-    return response.text.strip()
+    return Rewrite(query=response.text.strip(), model=model_name(response))
 
 
 async def retrieve(store: VectorStore, queries: list[str], k: int) -> list[Source]:

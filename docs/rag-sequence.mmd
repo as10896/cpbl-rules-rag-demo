@@ -28,7 +28,7 @@ sequenceDiagram
         opt rewrite is true
             API->>LLM: Rewrite the question in rulebook terminology
             LLM-->>API: Rewritten query
-            API-->>User: SSE event: rewrite
+            API-->>User: SSE event: rewrite (query and the model that wrote it)
         end
 
         loop For the question and the rewritten query, concurrently
@@ -49,5 +49,6 @@ sequenceDiagram
         LLM-->>API: Answer fragment
         API-->>User: SSE event: token
     end
+    API-->>User: SSE event: model (the model that answered)
 
     Note over User: Render the answer. Each [n] citation<br/>links to its retrieved chunk and PDF page

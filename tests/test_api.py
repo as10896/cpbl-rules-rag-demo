@@ -7,7 +7,8 @@ from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_core.language_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_qdrant import QdrantVectorStore
 
 from app.main import app, llm_dependency, store_dependency
@@ -39,8 +40,19 @@ def client():
     app.dependency_overrides.clear()
 
 
+MODEL = {"model_name": "fake-model"}
+
+
+class FakeChatModel(GenericFakeChatModel):
+    """Like real providers when streaming, reports the model name on a final, empty chunk."""
+
+    def _stream(self, *args, **kwargs):
+        yield from super()._stream(*args, **kwargs)
+        yield ChatGenerationChunk(message=AIMessageChunk(content="", response_metadata=MODEL))
+
+
 def use_llm(*replies: str) -> None:
-    llm = GenericFakeChatModel(messages=iter(AIMessage(content=reply) for reply in replies))
+    llm = FakeChatModel(messages=iter(AIMessage(content=reply, response_metadata=MODEL) for reply in replies))
     app.dependency_overrides[llm_dependency] = lambda: llm
 
 
@@ -66,15 +78,16 @@ def test_chat_with_rag_streams_rewrite_sources_then_tokens(client):
     response = client.post("/api/chat", json={"question": "可以挑戰幾次？", "top_k": 2})
     events = read_events(response)
     assert [name for name, _ in events[:2]] == ["rewrite", "sources"]
-    assert events[0][1] == "即時重播輔助判決 挑戰次數"
+    assert events[0][1] == {"query": "即時重播輔助判決 挑戰次數", "model": "fake-model"}
     assert len(events[1][1]) == 2
     assert "".join(data for name, data in events if name == "token") == "可以挑戰 [1]"
+    assert [data for name, data in events if name == "model"] == ["fake-model"]
 
 
 def test_chat_without_rag_only_streams_tokens(client):
     use_llm("憑印象回答")
     response = client.post("/api/chat", json={"question": "可以挑戰幾次？", "use_rag": False})
-    assert {name for name, _ in read_events(response)} == {"token"}
+    assert {name for name, _ in read_events(response)} == {"token", "model"}
 
 
 def test_chat_reports_llm_failure_as_error_event(client):

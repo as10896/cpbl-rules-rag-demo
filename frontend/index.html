@@ -50,6 +50,8 @@
   .answer:empty::before { content: "—"; color: var(--muted); }
   .status { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; min-height: 3em; }
   .status:not([hidden]) + .answer:empty { display: none; }
+  .model { margin-top: 14px; font-size: 12px; color: var(--muted); }
+  .model code, .rewrite code { font: inherit; font-family: ui-monospace, monospace; }
   .spinner {
     width: 14px; height: 14px; flex: none; border-radius: 50%;
     border: 2px solid var(--line); border-top-color: var(--accent);
@@ -105,11 +107,13 @@
       <div class="rewrite" id="rewritten" hidden></div>
       <div class="status" id="rag-status" hidden><span class="spinner"></span><span class="label"></span></div>
       <div class="answer" id="rag-answer"></div>
+      <div class="model" id="rag-model" hidden></div>
     </section>
     <section class="panel" id="plain-panel">
       <h2>不使用 RAG（模型自身知識）</h2>
       <div class="status" id="plain-status" hidden><span class="spinner"></span><span class="label"></span></div>
       <div class="answer" id="plain-answer"></div>
+      <div class="model" id="plain-model" hidden></div>
     </section>
   </div>
 
@@ -185,12 +189,19 @@ function setStatus(status, label) {
   status.querySelector(".label").textContent = label ?? "";
 }
 
+// The model name comes from the provider's response, so with a router it shows which model was actually picked.
+const modelLabel = (label, name) => `${label}<code>${escapeHtml(name ?? "未知")}</code>`;
+
 // Advance the status with each SSE event (rewriting → retrieving → generating);
 // once the first token arrives, show the streaming cursor instead.
-async function ask(payload, element, status) {
+async function ask(payload, panel) {
   const isRag = payload.use_rag;
+  const element = $(`${panel}-answer`);
+  const status = $(`${panel}-status`);
+  const model = $(`${panel}-model`);
   element.classList.remove("error");
   element.textContent = "";
+  model.hidden = true;
   setStatus(status, !isRag ? "生成回答中…" : payload.rewrite ? "改寫查詢中…" : "檢索條文中…");
   let text = "";
   try {
@@ -210,8 +221,11 @@ async function ask(payload, element, status) {
         setStatus(status, "生成回答中…");
       } else if (event === "rewrite") {
         $("rewritten").hidden = false;
-        $("rewritten").textContent = `改寫後的查詢：${data}`;
+        $("rewritten").innerHTML = `改寫後的查詢：${escapeHtml(data.query)}<br>${modelLabel("改寫模型：", data.model)}`;
         setStatus(status, "檢索條文中…");
+      } else if (event === "model") {
+        model.hidden = false;
+        model.innerHTML = modelLabel("回答模型：", data);
       } else if (event === "error") throw new Error(data);
     }
   } catch (error) {
@@ -232,10 +246,9 @@ $("form").addEventListener("submit", async (event) => {
   $("rewritten").hidden = true;
   $("sources").innerHTML = "";
   $("plain-panel").hidden = !compare;
-  $("plain-answer").textContent = "";
   $("ask").textContent = "處理中…";
-  const requests = [ask({ question, use_rag: true, rewrite: $("rewrite").checked }, $("rag-answer"), $("rag-status"))];
-  if (compare) requests.push(ask({ question, use_rag: false }, $("plain-answer"), $("plain-status")));
+  const requests = [ask({ question, use_rag: true, rewrite: $("rewrite").checked }, "rag")];
+  if (compare) requests.push(ask({ question, use_rag: false }, "plain"));
   await Promise.all(requests);
   $("ask").disabled = false;
   $("ask").textContent = "提問";
