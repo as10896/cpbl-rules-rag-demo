@@ -1,0 +1,53 @@
+sequenceDiagram
+    autonumber
+    actor User as User (browser)
+    participant CLI as Ingest CLI<br/>(app.ingest)
+    participant Site as cpbl.com.tw
+    participant API as FastAPI
+    participant LLM as LLM<br/>(via LangChain)
+    participant Embed as fastembed<br/>(local embedding model)
+    participant Qdrant
+
+    Note over CLI,Qdrant: Indexing, run once and again whenever the documents change
+
+    CLI->>Site: Download the three rule PDFs
+    Site-->>CLI: PDF files
+    CLI->>CLI: Extract text, drop page numbers and running headers
+    CLI->>CLI: Split into articles by article number,<br/>then split over-long articles into chunks
+    CLI->>CLI: Prepend a citation header to each chunk
+    CLI->>Embed: Embed every chunk
+    Embed-->>CLI: Vectors
+    CLI->>Qdrant: Recreate the collection and store<br/>vectors with citation metadata
+
+    Note over User,Qdrant: Question answering, once per question
+
+    User->>API: POST /api/chat {question, use_rag, rewrite, top_k}
+    API-->>User: Open the SSE stream
+
+    alt use_rag is true
+        opt rewrite is true
+            API->>LLM: Rewrite the question in rulebook terminology
+            LLM-->>API: Rewritten query
+            API-->>User: SSE event: rewrite
+        end
+
+        loop For the question and the rewritten query, concurrently
+            API->>Embed: Embed the query
+            Embed-->>API: Query vector
+            API->>Qdrant: Similarity search, top k
+            Qdrant-->>API: Chunks with scores
+        end
+
+        API->>API: Merge the results, keep the best score<br/>per chunk, take the top k
+        API-->>User: SSE event: sources
+        API->>LLM: System prompt, numbered chunks and the question
+    else use_rag is false (comparison baseline)
+        API->>LLM: System prompt and the question only
+    end
+
+    loop Until the answer is complete
+        LLM-->>API: Answer fragment
+        API-->>User: SSE event: token
+    end
+
+    Note over User: Render the answer. Each [n] citation<br/>links to its retrieved chunk and PDF page

@@ -3,17 +3,28 @@
 [![English](https://img.shields.io/badge/English-read-brightgreen)](README.md)
 [![繁體中文](https://img.shields.io/badge/%E7%B9%81%E9%AB%94%E4%B8%AD%E6%96%87-read-blue)](README_zh-TW.md)
 
-以中華職棒官方規則文件為知識庫的 RAG 範例：描述一個比賽情境或規章問題，系統檢索相關條文後回答，並附上條號、頁碼與官方 PDF 連結。
+一個簡單的 demo project，展示如何用 LangChain 和 Qdrant 搭建 RAG（檢索增強生成）應用，以 FastAPI 提供服務，全部以 Docker Compose 執行。
 
-技術組成：FastAPI、LangChain（元件層）、Qdrant、fastembed（本機 embedding），全部以 Docker Compose 執行。
+展示的重點：
+
+- 依文件本身的結構切分，並在每個 chunk 開頭寫上出處
+- 檢索前先改寫使用者的問題
+- 串流輸出回答，引用可以連回原始文件的頁面
+- 同一個問題並排顯示「有檢索」與「沒有檢索」的回答
+- 只改設定就能更換 LLM provider
+
+知識庫只是範例，這裡用的是中華職棒（CPBL）的官方規則文件：描述一個比賽情境或規章問題，系統檢索相關條文後回答，並附上條號、頁碼與官方 PDF 連結。做法本身和棒球無關，與這份語料綁在一起的只有 `app/corpus.py` 的文件定義、`app/rag.py` 的 prompt，以及介面上的範例問題。
 
 ## 快速開始
 
 ```bash
 cp .env.example .env          # 填入 OPENROUTER_API_KEY（預設使用免費模型，或改用其他 provider）
-docker compose up -d --build
+docker compose build
 docker compose run --rm api python -m app.ingest   # 下載 PDF 並建立索引，約 2 分鐘
+docker compose up -d
 ```
+
+索引在 API 啟動之前就建好，服務一起來就能使用。`docker compose run` 會自動啟動 Qdrant；索引存在 volume 裡，只有在文件、切分方式或 embedding 模型改變時才需要重新 ingest。
 
 - 問答介面：http://localhost:8000
 - API 文件：http://localhost:8000/docs
@@ -44,6 +55,8 @@ docker compose run --rm api python -m app.ingest   # 下載 PDF 並建立索引�
   問題 ─→ LLM 改寫成規則用語 ─→ 原問題與改寫後各檢索一次，合併取前 k 筆
       ─→ 條文編號後放進 prompt ─→ LLM 串流回答，以 [1][2] 標註出處
 ```
+
+同一個流程的循序圖：[docs/rag-sequence.mmd](docs/rag-sequence.mmd)。
 
 ## 程式碼導覽
 
@@ -76,7 +89,11 @@ curl --get localhost:8000/api/search --data-urlencode "q=延長賽最多打幾�
 
 **檢索前先改寫查詢。** 球迷說「洋將」「挑戰」「擋壘」，條文寫的是「外國籍球員」「即時重播輔助判決」「妨礙跑壘」。在介面上取消勾選「檢索前先改寫查詢」，用「洋將一場比賽最多可以同時上幾個？」就能看到差別。
 
+**以 LangChain 作為整合層。** 它是 LLM 應用最多人使用的 stack，這裡的寫法和多數 RAG 專案相近，學到的東西可以直接帶到別的專案。共通介面也讓 LLM 變成設定上的選擇：`init_chat_model` 把 `LLM_MODEL` 轉成對應的 client，在 Anthropic、OpenRouter、NVIDIA 的模型之間切換只需要改 `.env`。Text splitter 和 Qdrant 的整合也都是現成的。代價是程式和實際的 API 呼叫之間多了一層，這也是下一項決策的原因。
+
 **用 LangChain 的元件，不用它的 chain 或 agent。** Chat model、Embeddings、VectorStore、text splitter 都走 LangChain 介面，所以換 provider 或換向量資料庫只改一處；但流程本身是 `app/rag.py` 裡的三個普通函式，每一步送出什麼都看得到。
+
+**向量資料庫選用 Qdrant。** 它只需要一個 container，適合 Compose 的環境；內建的管理介面可以直接瀏覽存進去的 chunk 和 metadata，對理解檢索的行為很有幫助。Client 有記憶體內模式，API 測試就是用它取代實際的服務。它原生支援 sparse vector，之後要加 hybrid search 有路可走。當時考慮過的替代方案是 pgvector：應用本來就需要 PostgreSQL 存關聯式資料時它更合適，但這個 demo 除了 chunk 之外沒有其他資料要存。
 
 **LLM 與向量庫以 FastAPI dependency 注入。** 測試時用 `dependency_overrides` 換成假的 LLM 與記憶體內的 Qdrant，整條流程不需要 API key 或外部服務就能跑。
 

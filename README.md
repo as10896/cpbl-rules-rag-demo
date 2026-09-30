@@ -3,19 +3,30 @@
 [![English](https://img.shields.io/badge/English-read-brightgreen)](README.md)
 [![繁體中文](https://img.shields.io/badge/%E7%B9%81%E9%AB%94%E4%B8%AD%E6%96%87-read-blue)](README_zh-TW.md)
 
-A RAG example that uses the official rule documents of the CPBL (Chinese Professional Baseball League, Taiwan) as its knowledge base. Describe a game situation or ask a regulation question; the system retrieves the relevant articles and answers with the article number, page number and a link to the official PDF.
+A small demo project that shows how to build a RAG (retrieval-augmented generation) application with LangChain and Qdrant, served by FastAPI and run entirely under Docker Compose.
 
-Stack: FastAPI, LangChain (component layer only), Qdrant and fastembed (local embeddings), all running under Docker Compose.
+What it demonstrates:
 
-The corpus, the prompts and the web UI are in Traditional Chinese, so questions should be asked in Chinese.
+- Splitting documents along their own structure, and giving every chunk a citation header
+- Rewriting the user's question before retrieval
+- Streaming an answer whose citations link back to the source page
+- Showing the same question answered with and without retrieval, side by side
+- Switching LLM provider through configuration alone
+
+The knowledge base is only an example: the official rule documents of the CPBL (Chinese Professional Baseball League, Taiwan). Ask about a game situation or a regulation, and the app retrieves the relevant articles and answers with the article number, the page number and a link to the official PDF. Nothing in the approach is specific to baseball. The parts tied to this corpus are the document definitions in `app/corpus.py`, the prompts in `app/rag.py` and the sample questions in the UI.
+
+Because the corpus is in Traditional Chinese, so are the prompts and the web UI, and questions should be asked in Chinese.
 
 ## Quick start
 
 ```bash
 cp .env.example .env          # fill in OPENROUTER_API_KEY (a free model is the default; other providers work too)
-docker compose up -d --build
+docker compose build
 docker compose run --rm api python -m app.ingest   # download the PDFs and build the index, about 2 minutes
+docker compose up -d
 ```
+
+The index is built before the API starts, so the app is usable as soon as it is up. `docker compose run` starts Qdrant on its own, and the index is kept in a volume, so ingest only needs to run again when the documents, the chunking or the embedding model change.
 
 - Web UI: http://localhost:8000
 - API docs: http://localhost:8000/docs
@@ -50,6 +61,8 @@ Question answering (POST /api/chat, streamed as SSE)
            ─→ LLM streams the answer, citing sources as [1][2]
 ```
 
+The same flow as a sequence diagram: [docs/rag-sequence.mmd](docs/rag-sequence.mmd).
+
 ## Code tour
 
 | File | Responsibility |
@@ -81,7 +94,11 @@ curl --get localhost:8000/api/search --data-urlencode "q=延長賽最多打幾�
 
 **Rewrite the query before retrieving.** Fans say 洋將 (foreign player), 挑戰 (challenge) and 擋壘 (blocking the base); the rulebook says 外國籍球員, 即時重播輔助判決 and 妨礙跑壘. To see the difference, untick 檢索前先改寫查詢 ("rewrite the query before retrieving") in the UI and ask 「洋將一場比賽最多可以同時上幾個？」 (how many foreign players can be on the field at once).
 
+**LangChain as the integration layer.** It is the most widely used stack for LLM applications, so the code here looks like what most RAG projects look like and carries over to them. Its shared interfaces also make the LLM a configuration choice: `init_chat_model` turns `LLM_MODEL` into the right client, so moving between Anthropic, OpenRouter and NVIDIA models is a change to `.env` only. The text splitter and the Qdrant integration come ready-made. The cost is an extra layer between this code and the actual API calls, which is the reason for the next decision.
+
 **LangChain components, but not its chains or agents.** The chat model, embeddings, vector store and text splitter all go through LangChain interfaces, so switching provider or vector database is a change in one place. The flow itself is three plain functions in `app/rag.py`, so what each step sends is always visible.
+
+**Qdrant as the vector database.** It runs as a single container, which suits a Compose setup, and it ships with a dashboard for browsing the stored chunks and their metadata, which is useful when learning how retrieval behaves. Its client has an in-memory mode, which the API tests use in place of a running server. It also supports sparse vectors natively, leaving room to add hybrid search later. The alternative considered was pgvector. That is the better fit when an application already needs PostgreSQL for relational data, but this demo stores nothing except the chunks.
 
 **The LLM and the vector store are injected as FastAPI dependencies.** Tests replace them through `dependency_overrides` with a fake LLM and an in-memory Qdrant, so the whole flow runs without an API key or any external service.
 
