@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPBL 規則 RAG</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: light-dark(#f6f5f1, #15171a);
+    --panel: light-dark(#ffffff, #1e2126);
+    --line: light-dark(#dedbd2, #32363d);
+    --text: light-dark(#1d1f23, #e6e4df);
+    --muted: light-dark(#6b6e76, #9a9da5);
+    --accent: light-dark(#0b5d3b, #6fcf9d);
+    --accent-soft: light-dark(#e3f1ea, #1d3329);
+    --warn: light-dark(#9a3412, #f0a57c);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.7 system-ui, "PingFang TC", "Noto Sans TC", sans-serif;
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 22px; margin: 0; }
+  header p { margin: 4px 0 24px; color: var(--muted); font-size: 14px; }
+  textarea {
+    width: 100%; min-height: 84px; padding: 12px 14px; resize: vertical;
+    font: inherit; color: inherit; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px;
+  }
+  textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .examples { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
+  .examples button {
+    font: inherit; font-size: 13px; color: var(--muted); background: none; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 999px; padding: 2px 12px;
+  }
+  .examples button:hover { color: var(--accent); border-color: var(--accent); }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; font-size: 14px; }
+  .controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  #ask {
+    font: inherit; font-weight: 600; color: var(--panel); background: var(--accent);
+    border: 0; border-radius: 8px; padding: 8px 22px; cursor: pointer;
+  }
+  #ask:disabled { opacity: .5; cursor: progress; }
+  .columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 24px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; min-width: 0; }
+  .panel h2 { font-size: 13px; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .answer { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 3em; }
+  .answer:empty::before { content: "—"; color: var(--muted); }
+  .status { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; min-height: 3em; }
+  .status:not([hidden]) + .answer:empty { display: none; }
+  .spinner {
+    width: 14px; height: 14px; flex: none; border-radius: 50%;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    animation: spin .8s linear infinite;
+  }
+  .answer.streaming::after {
+    content: ""; display: inline-block; width: .5em; height: 1.1em; margin-left: 2px;
+    vertical-align: text-bottom; background: var(--accent); animation: blink 1s steps(2) infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation-duration: 2.4s; }
+    .answer.streaming::after { animation: none; }
+  }
+  .rewrite { font-size: 13px; color: var(--muted); margin-bottom: 12px; padding: 8px 12px; background: var(--bg); border-radius: 8px; }
+  .error { color: var(--warn); }
+  .cite {
+    font: inherit; font-size: 12px; font-weight: 600; color: var(--accent); background: var(--accent-soft);
+    border: 0; border-radius: 4px; padding: 0 5px; margin: 0 1px; cursor: pointer; vertical-align: 1px;
+  }
+  #sources { margin-top: 16px; display: grid; gap: 10px; }
+  .source { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--panel); scroll-margin-top: 16px; }
+  .source.highlight { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .source summary { cursor: pointer; display: flex; gap: 10px; align-items: baseline; font-size: 14px; }
+  .source summary b { color: var(--accent); }
+  .source .score { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }
+  .source pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 14px; color: var(--muted); margin: 8px 0 4px; }
+  .source a { font-size: 13px; color: var(--accent); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>CPBL 規則 RAG</h1>
+    <p>根據中華職棒官方的《棒球規則》《裁判執法手冊規則補述》《聯盟規章》回答判決與規章問題。</p>
+  </header>
+
+  <form id="form">
+    <textarea id="question" placeholder="描述一個比賽情境，或直接問規章問題…" required></textarea>
+    <div class="examples" id="examples"></div>
+    <div class="controls">
+      <button id="ask" type="submit">提問</button>
+      <label><input type="checkbox" id="rewrite" checked> 檢索前先改寫查詢</label>
+      <label><input type="checkbox" id="compare" checked> 同時顯示不使用 RAG 的回答</label>
+    </div>
+  </form>
+
+  <div class="columns">
+    <section class="panel">
+      <h2>使用 RAG</h2>
+      <div class="rewrite" id="rewritten" hidden></div>
+      <div class="status" id="rag-status" hidden><span class="spinner"></span><span class="label"></span></div>
+      <div class="answer" id="rag-answer"></div>
+    </section>
+    <section class="panel" id="plain-panel">
+      <h2>不使用 RAG（模型自身知識）</h2>
+      <div class="status" id="plain-status" hidden><span class="spinner"></span><span class="label"></span></div>
+      <div class="answer" id="plain-answer"></div>
+    </section>
+  </div>
+
+  <div id="sources"></div>
+</main>
+
+<script>
+const EXAMPLES = [
+  "洋將一場比賽最多可以同時上幾個？",
+  "總教練一場比賽可以挑戰幾次？挑戰失敗會怎樣？",
+  "投手投球計時是幾秒？超過時間怎麼判？",
+  "一出局滿壘，打者打出內野高飛球，野手漏接，怎麼判？",
+  "捕手沒有持球卻擋住本壘板，跑者撞上去，怎麼判？",
+  "比賽打到六局下因為大雨無法繼續，算正式比賽嗎？",
+];
+
+const $ = (id) => document.getElementById(id);
+const escapeHtml = (text) => text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+for (const text of EXAMPLES) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = text;
+  button.onclick = () => { $("question").value = text; $("form").requestSubmit(); };
+  $("examples").append(button);
+}
+
+// EventSource only supports GET, so read the stream with fetch and parse the SSE format by hand.
+async function* readEvents(response) {
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer = (buffer + value).replace(/\r\n/g, "\n");
+    let end;
+    while ((end = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      let event = "message";
+      const data = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+      }
+      if (data.length) yield { event, data: JSON.parse(data.join("\n")) };
+    }
+  }
+}
+
+function renderAnswer(element, text, linkCitations) {
+  // Some models start their output with blank lines.
+  let html = escapeHtml(text.trimStart());
+  if (linkCitations) html = html.replace(/\[(\d+)\]/g, '<button class="cite" data-index="$1">$1</button>');
+  element.innerHTML = html;
+}
+
+function renderSources(sources) {
+  $("sources").innerHTML = sources.map((s) => `
+    <details class="source" id="source-${s.index}">
+      <summary>
+        <b>[${s.index}]</b>
+        <span>《${escapeHtml(s.doc_title)}》${escapeHtml(`${s.section} ${s.title}`.trim())}</span>
+        <span class="score">相似度 ${s.score.toFixed(3)}</span>
+      </summary>
+      <pre>${escapeHtml(s.text)}</pre>
+      <a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">官方 PDF 第 ${s.page} 頁 ↗</a>
+    </details>`).join("");
+}
+
+function setStatus(status, label) {
+  status.hidden = !label;
+  status.querySelector(".label").textContent = label ?? "";
+}
+
+// Advance the status with each SSE event (rewriting → retrieving → generating);
+// once the first token arrives, show the streaming cursor instead.
+async function ask(payload, element, status) {
+  const isRag = payload.use_rag;
+  element.classList.remove("error");
+  element.textContent = "";
+  setStatus(status, !isRag ? "生成回答中…" : payload.rewrite ? "改寫查詢中…" : "檢索條文中…");
+  let text = "";
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error((await response.json()).detail ?? response.statusText);
+    for await (const { event, data } of readEvents(response)) {
+      if (event === "token") {
+        setStatus(status, null);
+        element.classList.add("streaming");
+        renderAnswer(element, (text += data), isRag);
+      } else if (event === "sources") {
+        renderSources(data);
+        setStatus(status, "生成回答中…");
+      } else if (event === "rewrite") {
+        $("rewritten").hidden = false;
+        $("rewritten").textContent = `改寫後的查詢：${data}`;
+        setStatus(status, "檢索條文中…");
+      } else if (event === "error") throw new Error(data);
+    }
+  } catch (error) {
+    element.classList.add("error");
+    element.textContent = `${text}\n⚠ ${error.message}`.trim();
+  } finally {
+    setStatus(status, null);
+    element.classList.remove("streaming");
+  }
+}
+
+$("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const question = $("question").value.trim();
+  if (!question) return;
+  const compare = $("compare").checked;
+  $("ask").disabled = true;
+  $("rewritten").hidden = true;
+  $("sources").innerHTML = "";
+  $("plain-panel").hidden = !compare;
+  $("plain-answer").textContent = "";
+  $("ask").textContent = "處理中…";
+  const requests = [ask({ question, use_rag: true, rewrite: $("rewrite").checked }, $("rag-answer"), $("rag-status"))];
+  if (compare) requests.push(ask({ question, use_rag: false }, $("plain-answer"), $("plain-status")));
+  await Promise.all(requests);
+  $("ask").disabled = false;
+  $("ask").textContent = "提問";
+});
+
+$("question").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) $("form").requestSubmit();
+});
+
+$("rag-answer").addEventListener("click", (event) => {
+  const index = event.target.closest(".cite")?.dataset.index;
+  const source = index && $(`source-${index}`);
+  if (!source) return;
+  document.querySelectorAll(".source.highlight").forEach((el) => el.classList.remove("highlight"));
+  source.open = true;
+  source.classList.add("highlight");
+  source.scrollIntoView({ behavior: "smooth", block: "nearest" });
+});
+</script>
+</body>
+</html>

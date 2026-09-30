@@ -1,0 +1,37 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      QDRANT_URL: http://qdrant:6333
+    volumes:
+      # Keep the PDFs and embedding model cache on the host so rebuilding the image doesn't re-download them.
+      - ./data:/app/data
+    depends_on:
+      - qdrant
+    # docker compose up --watch syncs code changes into the container.
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./app
+          target: /app/app
+        - action: sync
+          path: ./frontend
+          target: /app/frontend
+        - action: rebuild
+          path: ./uv.lock
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    ports:
+      # Built-in dashboard: http://localhost:6333/dashboard
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  qdrant_data:
