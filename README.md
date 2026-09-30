@@ -32,7 +32,7 @@ Two more examples:
 
 ## Quick start
 
-1. Create the config file, then open `.env` and fill in `OPENROUTER_API_KEY`. The default is a free model; `.env.example` lists the other providers.
+1. Create the config file, then open `.env` and fill in `OPENROUTER_API_KEY`. The default is a free model, which has a daily request limit (see the note below); `.env.example` lists the other providers.
 
    ```bash
    cp .env.example .env
@@ -55,6 +55,8 @@ Two more examples:
    ```bash
    docker compose up -d
    ```
+
+> **Free model quota.** As of September 2026, OpenRouter limits free models to 50 requests per day per account, or 1000 once the account has bought 10 credits, and to 20 per minute. These figures can change; the [OpenRouter limits page](https://openrouter.ai/docs/api-reference/limits) has the current ones. One question sends up to 3 requests (query rewrite, RAG answer, no-RAG answer), so at 50 a day the free quota covers about 16 questions. Unticking the comparison or the rewrite option saves one request each. When the quota runs out, the UI shows `Rate limit exceeded: free-models-per-day` until the next day.
 
 The index is built before the API starts, so the app is usable as soon as it is up. It is kept in a volume, so ingest only needs to run again when the documents, the chunking or the embedding model change.
 

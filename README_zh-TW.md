@@ -30,7 +30,7 @@
 
 ## 快速開始
 
-1. 建立設定檔，然後打開 `.env` 填入 `OPENROUTER_API_KEY`。預設使用免費模型，其他 provider 的設定列在 `.env.example` 裡。
+1. 建立設定檔，然後打開 `.env` 填入 `OPENROUTER_API_KEY`。預設使用免費模型，每天有請求數上限（見下方說明）；其他 provider 的設定列在 `.env.example` 裡。
 
    ```bash
    cp .env.example .env
@@ -53,6 +53,8 @@
    ```bash
    docker compose up -d
    ```
+
+> **免費模型的額度。** 截至 2026 年 9 月，OpenRouter 的免費模型每個帳號每天限 50 個請求（帳號累計購買 10 credits 後為 1000 個），每分鐘限 20 個。這些數字可能調整，最新的規定請看 [OpenRouter 的限制說明](https://openrouter.ai/docs/api-reference/limits)。一個問題最多會發 3 個請求（改寫查詢、RAG 回答、無 RAG 回答），以每天 50 個計算，免費額度大約能問 16 題。取消勾選「同時顯示不使用 RAG 的回答」或「檢索前先改寫查詢」各可省下一個請求。額度用完時，介面會顯示 `Rate limit exceeded: free-models-per-day`，隔天才會恢復。
 
 索引在 API 啟動之前就建好，服務一起來就能使用。索引存在 volume 裡，只有在文件、切分方式或 embedding 模型改變時才需要重新 ingest。
 
