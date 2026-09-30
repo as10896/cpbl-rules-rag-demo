@@ -17,16 +17,46 @@ The knowledge base is only an example: the official rule documents of the CPBL (
 
 Because the corpus is in Traditional Chinese, so are the prompts and the web UI, and questions should be asked in Chinese.
 
+## What it looks like
+
+The same question answered with retrieval (left) and without it (right), with the retrieved articles listed below:
+
+![Asking how many replay challenges a manager gets](docs/screenshots/replay-challenge.png)
+
+Here the answer on the left quotes the league regulation: two challenges in nine innings. The one on the right, from the same model without the documents, makes up a rule about earning a third.
+
+Two more examples:
+
+- [A colloquial question about a catcher blocking home plate](docs/screenshots/home-plate-collision.png): the query is rewritten into rulebook terms, every retrieved chunk comes from rule 6.01, and the answer includes the exceptions.
+- [The pitch timer](docs/screenshots/pitch-timer.png): two documents give different numbers, and the answer reports both along with their sources.
+
 ## Quick start
 
-```bash
-cp .env.example .env          # fill in OPENROUTER_API_KEY (a free model is the default; other providers work too)
-docker compose build
-docker compose run --rm api python -m app.ingest   # download the PDFs and build the index, about 2 minutes
-docker compose up -d
-```
+1. Create the config file, then open `.env` and fill in `OPENROUTER_API_KEY`. The default is a free model; `.env.example` lists the other providers.
 
-The index is built before the API starts, so the app is usable as soon as it is up. `docker compose run` starts Qdrant on its own, and the index is kept in a volume, so ingest only needs to run again when the documents, the chunking or the embedding model change.
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Build the image.
+
+   ```bash
+   docker compose build
+   ```
+
+3. Download the PDFs and build the index. This takes about 2 minutes and starts Qdrant on its own.
+
+   ```bash
+   docker compose run --rm api python -m app.ingest
+   ```
+
+4. Start the app.
+
+   ```bash
+   docker compose up -d
+   ```
+
+The index is built before the API starts, so the app is usable as soon as it is up. It is kept in a volume, so ingest only needs to run again when the documents, the chunking or the embedding model change.
 
 - Web UI: http://localhost:8000
 - API docs: http://localhost:8000/docs
@@ -80,7 +110,7 @@ The same flow as a sequence diagram: [docs/rag-sequence.mmd](docs/rag-sequence.m
 | Endpoint | Description |
 |---|---|
 | `GET /api/search?q=&k=` | Retrieval only; returns chunks with similarity scores. Use it to see the effect of changing the chunking or the embedding model |
-| `POST /api/chat` | Takes `{question, use_rag, rewrite, top_k}` and streams `rewrite`, `sources`, `token` and `error` events as SSE |
+| `POST /api/chat` | Takes `{question, use_rag, rewrite, top_k}` and streams `rewrite`, `sources`, `token`, `model` and `error` events as SSE. `rewrite` and `model` carry the name of the model that actually responded |
 
 ```bash
 curl --get localhost:8000/api/search --data-urlencode "q=延長賽最多打幾局" | jq '.[] | {section, title, score}'
@@ -94,7 +124,7 @@ curl --get localhost:8000/api/search --data-urlencode "q=延長賽最多打幾�
 
 **Rewrite the query before retrieving.** Fans say 洋將 (foreign player), 挑戰 (challenge) and 擋壘 (blocking the base); the rulebook says 外國籍球員, 即時重播輔助判決 and 妨礙跑壘. To see the difference, untick 檢索前先改寫查詢 ("rewrite the query before retrieving") in the UI and ask 「洋將一場比賽最多可以同時上幾個？」 (how many foreign players can be on the field at once).
 
-**LangChain as the integration layer.** It is the most widely used stack for LLM applications, so the code here looks like what most RAG projects look like and carries over to them. Its shared interfaces also make the LLM a configuration choice: `init_chat_model` turns `LLM_MODEL` into the right client, so moving between Anthropic, OpenRouter and NVIDIA models is a change to `.env` only. The text splitter and the Qdrant integration come ready-made. The cost is an extra layer between this code and the actual API calls, which is the reason for the next decision.
+**LangChain as the integration layer.** It is the most widely used stack for LLM applications, so the code here looks like what most RAG projects look like and carries over to them. Its shared interfaces also make the LLM a configuration choice: `init_chat_model` turns `LLM_MODEL` into the right client, so moving between Anthropic, OpenAI and OpenRouter models is a change to `.env` only. The text splitter and the Qdrant integration come ready-made. The cost is an extra layer between this code and the actual API calls, which is the reason for the next decision.
 
 **LangChain components, but not its chains or agents.** The chat model, embeddings, vector store and text splitter all go through LangChain interfaces, so switching provider or vector database is a change in one place. The flow itself is three plain functions in `app/rag.py`, so what each step sends is always visible.
 
@@ -104,7 +134,7 @@ curl --get localhost:8000/api/search --data-urlencode "q=延長賽最多打幾�
 
 ## Swapping components
 
-- **LLM**: change `LLM_MODEL` in `.env` (format `provider:model`) and supply that provider's API key. The packages for Anthropic, OpenAI, OpenRouter and NVIDIA are installed; see `.env.example` for the settings. For a free option, use OpenRouter. The free tier of the NVIDIA API Catalog took minutes to respond when tested and times out, so it is not recommended. The next section covers adding other providers.
+- **LLM**: change `LLM_MODEL` in `.env` (format `provider:model`) and supply that provider's API key. The packages for Anthropic, OpenAI and OpenRouter are installed; see `.env.example` for the settings. For a free option, pin a specific free model on OpenRouter rather than using the `openrouter/free` router, which picks a model at random for every request and can land on one that is not a chat model. The next section covers adding other providers.
 - **Embedding model**: change `EMBEDDING_MODEL`, then re-run ingest. The default `BAAI/bge-small-zh-v1.5` is small and fast. `jinaai/jina-embeddings-v2-base-zh` accepts longer input but takes about 7 times as long to index.
 - **Vector database**: replace `get_store()` in `app/vectorstore.py` and the write call in `app/ingest.py`.
 
@@ -176,13 +206,14 @@ Write a class that inherits from `BaseChatModel` (implement `_generate` at minim
 
 ### What to check after switching provider
 
-The project asks three things of an LLM. Confirm each of them with a new provider:
+Confirm each of these with a new provider:
 
 - **Streaming**: `/api/chat` uses `astream()`. A model without streaming still works, but the answer appears all at once.
-- **Response time**: one question sends 2 to 3 requests (query rewrite, RAG answer, no-RAG answer). A service that takes minutes per request will time out, which is what happens on NVIDIA's free tier.
+- **Response time**: one question sends 2 to 3 requests (query rewrite, RAG answer, no-RAG answer). A service that takes minutes per request will time out.
 - **Following instructions**: smaller models may omit the `[1]` citations, answer in Simplified Chinese, or add explanations when rewriting the query. Trying a few of the sample questions in the UI tells you more than a spec sheet.
+- **Which model actually answers**: the UI shows the model name the provider reports, under each answer and next to the rewritten query. With a router it can differ on every request, which explains answers that vary in quality for no visible reason.
 
-The tests (`uv run pytest`) use a fake LLM. They will not fail because of a provider change, and for the same reason they cannot verify the three points above.
+The tests (`uv run pytest`) use a fake LLM. They will not fail because of a provider change, and for the same reason they cannot verify the points above.
 
 ## Tests
 
