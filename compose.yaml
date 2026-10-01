@@ -1,3 +1,6 @@
+# Fixed project name, so Docker resources don't depend on the name of the checkout directory.
+name: cpbl-rules-rag-demo
+
 services:
   api:
     build: .

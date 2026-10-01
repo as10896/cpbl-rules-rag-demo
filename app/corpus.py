@@ -81,7 +81,7 @@ def download(data_dir: Path, force: bool = False) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     # The site's CDN sets a cookie and redirects back to the same URL. Use one Client
     # (which keeps cookies) and follow redirects, or the request redirects forever.
-    headers = {"User-Agent": "Mozilla/5.0 (cpbl-rag demo)"}
+    headers = {"User-Agent": "Mozilla/5.0 (cpbl-rules-rag-demo)"}
     with httpx.Client(follow_redirects=True, headers=headers, timeout=60) as client:
         for spec in DOCS:
             path = data_dir / spec.filename
