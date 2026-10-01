@@ -12,6 +12,7 @@ What it demonstrates:
 - Streaming an answer whose citations link back to the source page
 - Showing the same question answered with and without retrieval, side by side
 - Switching LLM provider through configuration alone
+- Where RAG helps and where it still gets things wrong, shown with checked examples
 
 The knowledge base is only an example: the official rule documents of the CPBL (Chinese Professional Baseball League, Taiwan). Ask about a game situation or a regulation, and the app retrieves the relevant articles and answers with the article number, the page number and a link to the official PDF. Nothing in the approach is specific to baseball. The parts tied to this corpus are the document definitions in `app/corpus.py`, the prompts in `app/rag.py` and the sample questions in the UI.
 
@@ -19,16 +20,37 @@ Because the corpus is in Traditional Chinese, so are the prompts and the web UI,
 
 ## What it looks like
 
-The same question answered with retrieval (left) and without it (right), with the retrieved articles listed below:
+Each question is answered twice, with retrieval (left) and without it (right), and the retrieved articles are listed below:
 
 ![Asking how many replay challenges a manager gets](docs/screenshots/replay-challenge.png)
 
-Here the answer on the left quotes the league regulation: two challenges in nine innings. The one on the right, from the same model without the documents, makes up a rule about earning a third.
+## What RAG fixes, and what it doesn't
 
-Two more examples:
+RAG is not a cure-all. Three examples illustrate this. Both sides of each were run with the same free model, and every answer was checked line by line against the source PDFs:
 
-- [The pitch timer](docs/screenshots/pitch-timer.png): two documents give different numbers, and the answer reports both along with their sources. The figures are those of the 2024 supplement, the newest edition the league has published.
-- [A colloquial question about a catcher blocking home plate](docs/screenshots/home-plate-collision.png): the query is rewritten into rulebook terms and the answer follows rule 6.01(i), exceptions included. It also shows a retrieval weakness: all six chunks come from that one rule, so the league's own supplement on home plate collisions (item 3.26), which is stricter about those exceptions, is never retrieved and the answer is incomplete. The screenshot predates the per-article cap described under Design decisions, which was added because of this case.
+- [Replay challenges](docs/screenshots/replay-challenge.png): 總教練一場比賽可以挑戰幾次？挑戰失敗會怎樣？ (How many replay challenges does a manager get, and what happens when one fails?)
+- [Pitch timer](docs/screenshots/pitch-timer.png): 投手投球計時是幾秒？超過時間怎麼判？ (How long is the pitch timer, and what is the call when it runs out?)
+- [Home plate collision](docs/screenshots/home-plate-collision.png): 捕手沒有持球卻擋住本壘板，跑者撞上去，怎麼判？ (The catcher blocks the plate without the ball and the runner crashes into him. What is the call?)
+
+The replay challenge and pitch timer examples show what retrieval fixes; the pitch timer and home plate examples show what it doesn't.
+
+### What it fixes: rules that are made up
+
+Without the documents, the model states rules that do not exist, as confidently as real ones:
+
+- Replay challenges: it invents a NT$10,000 fine for a second failed challenge. No such fine appears in any of the three documents.
+- Pitch timer: it says the timer does not apply with a runner on first or third, or with two outs. The supplement gives 25 seconds with runners on and has no exception for outs.
+
+With the documents, both answers match the articles they cite. Asked what happens after a failed challenge, the RAG answer says the regulation does not specify it, rather than guessing.
+
+### What it doesn't fix
+
+- **An answer is only as current as its documents.** The pitch timer answer reports 20 and 25 seconds, exactly as the 2024 supplement says, and that is the newest edition the league has published. News reports from early 2026 say the limits have since been shortened. If so, the answer is faithful to its source and still out of date.
+- **What is not retrieved cannot be used.** In the home plate example, the league's supplement item 3.26 is split into two chunks and only the second was retrieved. The first, which says a runner who collides maliciously is called out and ejected, never reaches the model, so the answer never mentions it.
+- **What is retrieved can still be misread.** The same answer says a runner who crashes into the catcher is out under rule 6.01(i)(1). A note on that rule, in the very first chunk retrieved, says the runner is not to be judged in violation when the catcher is blocking the path, which is exactly the situation asked about.
+- **Results vary between runs.** The query rewrite differs every time and retrieval depends on it, so the same question can be answered completely on one run and partially on the next (see Known limitations).
+
+The home plate answer without retrieval reaches the right basic verdict (the runner is safe) and only oversimplifies. RAG did not change the verdict there. What it added were citations, which are also what made the mistakes above possible to find.
 
 ## Quick start
 
@@ -121,21 +143,37 @@ curl --get localhost:8000/api/search --data-urlencode "q=延長賽最多打幾�
 
 ## Design decisions
 
-**Split by article number, not by fixed length.** The article is the semantic unit of a rule document, and citations need the article number. `RecursiveCharacterTextSplitter` is applied only when a single article exceeds `CHUNK_SIZE`.
+### 1. Split by article number, not by fixed length
 
-**Every chunk starts with its citation**, for example `《棒球規則》5.09 出局｜5.09(b) 跑壘員出局`. Once a long article is split, the later chunks no longer show which article they belong to. Chapter 6 of the supplement is the clearest case: it lists the rulings that can be changed and the rulings that cannot, and without the header the items of the two lists are indistinguishable.
+The article is the semantic unit of a rule document, and citations need the article number. `RecursiveCharacterTextSplitter` is applied only when a single article exceeds `CHUNK_SIZE`.
 
-**Rewrite the query before retrieving.** Fans say 洋將 (foreign player), 挑戰 (challenge) and 擋壘 (blocking the base); the rulebook says 外國籍球員, 即時重播輔助判決 and 妨礙跑壘. To see the difference, untick 檢索前先改寫查詢 ("rewrite the query before retrieving") in the UI and ask 「洋將一場比賽最多可以同時上幾個？」 (how many foreign players can be on the field at once).
+### 2. Every chunk starts with its citation
 
-**Merge the two searches by rank, and cap what one article contributes.** The original question and its rewrite are searched separately and combined by reciprocal rank fusion. Similarity scores from different queries are not comparable, and ranking the union by score let a rewrite that went astray push out the original question's best hits. Then at most three chunks per article are kept, because a long rule split into many similar chunks would otherwise fill every slot and crowd out a shorter, equally relevant item from another document. Both are trade-offs measured on the sample questions, not guarantees: a cap of two dropped the chunk that holds the pitch timer figures, and even with both in place the league's home plate collision item was retrieved for only 5 of 8 rewrites collected for that question.
+Each chunk begins with a header such as `《棒球規則》5.09 出局｜5.09(b) 跑壘員出局`. Once a long article is split, the later chunks no longer show which article they belong to. Chapter 6 of the supplement is the clearest case: it lists the rulings that can be changed and the rulings that cannot, and without the header the items of the two lists are indistinguishable.
 
-**LangChain as the integration layer.** It is the most widely used stack for LLM applications, so the code here looks like what most RAG projects look like and carries over to them. Its shared interfaces also make the LLM a configuration choice: `init_chat_model` turns `LLM_MODEL` into the right client, so moving between Anthropic, OpenAI and OpenRouter models is a change to `.env` only. The text splitter and the Qdrant integration come ready-made. The cost is an extra layer between this code and the actual API calls, which is the reason for the next decision.
+### 3. Rewrite the query before retrieving
 
-**LangChain components, but not its chains or agents.** The chat model, embeddings, vector store and text splitter all go through LangChain interfaces, so switching provider or vector database is a change in one place. The flow itself is three plain functions in `app/rag.py`, so what each step sends is always visible.
+Fans say 洋將 (foreign player), 挑戰 (challenge) and 擋壘 (blocking the base); the rulebook says 外國籍球員, 即時重播輔助判決 and 妨礙跑壘. To see the difference, untick 檢索前先改寫查詢 ("rewrite the query before retrieving") in the UI and ask 「洋將一場比賽最多可以同時上幾個？」 (how many foreign players can be on the field at once).
 
-**Qdrant as the vector database.** It runs as a single container, which suits a Compose setup, and it ships with a dashboard for browsing the stored chunks and their metadata, which is useful when learning how retrieval behaves. Its client has an in-memory mode, which the API tests use in place of a running server. It also supports sparse vectors natively, leaving room to add hybrid search later. The alternative considered was pgvector. That is the better fit when an application already needs PostgreSQL for relational data, but this demo stores nothing except the chunks.
+### 4. Merge the two searches by rank, and cap what one article contributes
 
-**The LLM and the vector store are injected as FastAPI dependencies.** Tests replace them through `dependency_overrides` with a fake LLM and an in-memory Qdrant, so the whole flow runs without an API key or any external service.
+The original question and its rewrite are searched separately and combined by reciprocal rank fusion. Similarity scores from different queries are not comparable, and ranking the union by score let a rewrite that went astray push out the original question's best hits. Then at most three chunks per article are kept, because a long rule split into many similar chunks would otherwise fill every slot and crowd out a shorter, equally relevant item from another document. Both are trade-offs measured on the sample questions, not guarantees: a cap of two dropped the chunk that holds the pitch timer figures, and even with both in place the league's home plate collision item was retrieved for only 5 of 8 rewrites collected for that question.
+
+### 5. LangChain as the integration layer
+
+It is the most widely used stack for LLM applications, so the code here looks like what most RAG projects look like and carries over to them. Its shared interfaces also make the LLM a configuration choice: `init_chat_model` turns `LLM_MODEL` into the right client, so moving between Anthropic, OpenAI and OpenRouter models is a change to `.env` only. The text splitter and the Qdrant integration come ready-made. The cost is an extra layer between this code and the actual API calls, which is the reason for the next decision.
+
+### 6. LangChain components, but not its chains or agents
+
+The chat model, embeddings, vector store and text splitter all go through LangChain interfaces, so switching provider or vector database is a change in one place. The flow itself is three plain functions in `app/rag.py`, so what each step sends is always visible.
+
+### 7. Qdrant as the vector database
+
+It runs as a single container, which suits a Compose setup, and it ships with a dashboard for browsing the stored chunks and their metadata, which is useful when learning how retrieval behaves. Its client has an in-memory mode, which the API tests use in place of a running server. It also supports sparse vectors natively, leaving room to add hybrid search later. The alternative considered was pgvector. That is the better fit when an application already needs PostgreSQL for relational data, but this demo stores nothing except the chunks.
+
+### 8. The LLM and the vector store are injected as FastAPI dependencies
+
+Tests replace them through `dependency_overrides` with a fake LLM and an in-memory Qdrant, so the whole flow runs without an API key or any external service.
 
 ## Swapping components
 
